@@ -1,0 +1,272 @@
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.TreeMap;
+import java.util.Map.Entry;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+
+public class Hw2Problem2 {
+	
+	
+	/*This mapper is used to emit (userId,UuserId) pair from users.dat file*/
+	 public static class MapUsers extends Mapper<LongWritable, Text, Text, Text> {
+
+		    public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+				String line = value.toString();
+		       	String []splitArray = line.split("::");
+		       	  		
+		       	if(splitArray[1].equalsIgnoreCase("M")) {
+		       	      String userId = splitArray[0].trim();
+		              context.write(new Text(userId), new Text("U" + userId));
+		         }
+		       }
+	        }	
+	
+	
+	 /*This mapper is used to emit (userId,RmovieId@rating) pair from ratings.dat file*/
+	 public static class MapRatings extends Mapper<LongWritable, Text, Text, Text> {
+
+		    public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+				String line = value.toString();
+		       	String []splitArray = line.split("::");
+		       	
+		       	if(splitArray != null && !splitArray[0].isEmpty() && !splitArray[1].isEmpty() && !splitArray[2].isEmpty()) {
+		               String userId = splitArray[0].trim();
+		               String movieId = splitArray[1].trim();
+		               String rating = splitArray[2].trim();
+		               String concatMovieIdAndRating = movieId + "@" + rating;
+		               context.write(new Text(userId), new Text("R" + concatMovieIdAndRating));
+		        }        
+		     }          
+		 }
+	 
+	 
+	 /*This reducer is used to join data from users.dat and ratings.dat files using userId as joining attribute(key)
+	  * Output from mapper of users.dat - (userId,UuserId)
+	  * Output from mapper of ratings.dat - (userId,RmovieId@rating)
+	  * */
+	 public static class ReduceJoin_UserAndRatings extends Reducer<Text, Text, Text, Text> {
+		 
+		 private Text tmp = new Text();
+		 double noOfPeople = (double)0;
+		 
+		 private ArrayList<Text> fromUserFile = new ArrayList<Text>();
+		 private ArrayList<Text> fromRatingsFile = new ArrayList<Text>();
+		 
+		 public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+			 fromUserFile.clear();
+			 fromRatingsFile.clear();
+		     for(Text val : values) {
+		     tmp = val;    
+		     
+		     if (val.charAt(0) == 'U') {
+		    	 fromUserFile.add(new Text(tmp.toString().substring(1)));
+		     } 
+		     
+		     else if (val.charAt(0) == 'R') {
+		    	 fromRatingsFile.add(new Text(tmp.toString().substring(1) ));
+		     }
+		     
+		     }
+		     executeJoinLogic(context);
+		     }
+		 
+		 private void executeJoinLogic(Context context) throws IOException, InterruptedException {
+		 if (!fromRatingsFile.isEmpty()) {
+			 
+		for(Text A : fromUserFile)	 {	 
+		 for (Text B : fromRatingsFile) {
+			 
+			 context.write(new Text(B.toString().split("@")[0]), new Text(A.toString() + "~" +B.toString().split("@")[0] +"~"+ B.toString().split("@")[1]));
+		     /*We are adding (movieId,userId~movieId~rating) to intermediate file which will be used for join
+		      * with movies.dat file using movieId as joining attribute*/
+		    }
+		  }
+		}
+	  }
+	}
+	 
+	 
+	 
+	/*This mapper is used to emit (MovieId,MmovieName@movieGenre) pair from movies.dat file*/
+	 public static class MapMovies extends Mapper<LongWritable, Text, Text, Text> {
+		 
+		 private Text outValue = new Text();
+		 private Text outKey = new Text();
+		 
+		 public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+		    	
+		    	String line = value.toString();
+		        String[] scannedArray = line.split("::");
+		        String movieId = scannedArray[0];
+		        String movieName = scannedArray[1];
+		        String movieGenre = scannedArray[2];
+		        String bothNameGenre;
+		        String newMovieId;
+		        
+		        if(movieGenre.contains("Action") || movieGenre.contains ("Drama") ){
+		        	newMovieId = movieId.toString();
+		        	outKey.set(newMovieId);
+		        	bothNameGenre =  "M" + movieName.toString()+ "@" +  movieGenre.toString();
+		        	outValue.set(bothNameGenre);
+		        	context.write(outKey,outValue);
+		        } 
+		   }          
+		 }
+	 
+	 
+	 
+	 /*This mapper is just used to emit (movieId,userId~movieID~Rating) pair read from intermediate file- which
+	  * we get after joining users.dat and ratings.dat files */
+	 public static class MapForUserAndRatingsWithMovies extends Mapper<LongWritable, Text, Text, Text> {
+		 
+		    public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+		    	String line = value.toString();
+		        String[] scannedArray = line.split("\t");
+		        context.write(new Text(scannedArray[0]),new Text(scannedArray[1]));	           
+		 }
+	 }
+	 
+	 
+	 /*This reducer is used to join records from intermediate file and movies.dat file
+	  * Intermediate file contents - movieId,userId~movieID~Rating
+	  * Mapper output after reading movies.dat file - moviesId,Mmoviename@moviegenre
+	  * */
+	 
+ public static class ReduceJoin_UserAndRatingsWithMovies extends Reducer<Text, Text, Text, Text> {
+	
+	 private ArrayList<Text> fromJoinFile = new ArrayList<Text>();
+	 private ArrayList<Text> fromMoviesFile = new ArrayList<Text>();
+	 TreeMap<String, String> repToRecordMap = new TreeMap<String, String>();
+	 
+	 public void reduce(Text key, Iterable<Text> values, Context context) 
+		       throws IOException, InterruptedException {
+		 double rating = 0;
+		 int count = 0;
+		 String line;
+	     String[] scannedArray;
+		 fromJoinFile.clear();
+	     fromMoviesFile.clear();	
+	     
+	     for(Text val : values){
+	    	 if(val.charAt(0) == 'M'){
+	    		 fromMoviesFile.add(new Text(val.toString().substring(1))); 	    		 
+	    	 }
+	    	 else{
+	    		 fromJoinFile.add(new Text(val.toString()));
+	    		 
+	    		 /*This section is used to compute average for each entry of movieId.
+	    		  * For each movieId, we will have set of ratings given by users and from that for each movieId
+	    		  * we can calculate the total rating and number of people who have rated that particular movie*/
+	    		 line = val.toString();
+	    		 scannedArray = line.split("~");
+	    		 rating += Double.parseDouble(scannedArray[2]);
+	    		 count++;
+	    	 }
+	     }
+	
+	     
+	     if (!fromMoviesFile.isEmpty()) {
+	    	 /*Here we are calculating the average rating based on values obtained in above for loop*/
+	       	 double average = rating / count;
+	    	 Double truncatedAverage = Math.floor(average * 100) / 100;
+			 
+	 		for(Text A : fromJoinFile)	 {	 
+	 		 for (Text B : fromMoviesFile) {
+	 		 		 if(truncatedAverage >= 4.40 && truncatedAverage <= 4.70){
+	 		 		 /*We are using TreeMap because we don't want duplicate values
+	 		 		 * Duplicate values are present because we have values of the form
+	 		 		 * (movieId,userId~movieID~Rating) and for each movieId we will have duplicate values
+	 		 		 * because a single movie can be rated by multiple users
+	 		 		 * e.g. - 
+	 		 		 * 12,23~12~4
+	 		 		 * 12,34~12~3
+	 		 		 * 12,45~12~2
+	 		 		 * 14,66~14~5
+	 		 		 * 
+	 		 		 * And, we have to emit only those movie whose average rating is 4.4<= Rating =>4.7	*/	
+	 		 			 
+	 				 repToRecordMap.put(A.toString().split("~")[1],B.toString().split("@")[0] + " " + B.toString().split("@")[1] + " " +String.valueOf(truncatedAverage));
+	 			     
+	 				 /* A = userId~movieID~Rating
+	 			      * B = moviename@moviegenre
+	 			      *  We are adding  (movieId,(moviename moviegenre averagerating)) to TreeMap as key,value pair*/
+	 		 		 }	 		 
+	 		     }
+	 		  }
+	 	 	 		 
+	 	    }
+	    }	
+	 
+	 public void cleanup(Context context) throws IOException, InterruptedException {
+			for (Entry<String,String> t : repToRecordMap.entrySet() ) 
+		     	{
+				context.write(new Text(t.getKey()),new Text(t.getValue()));
+				/*We are writing output as movieId,(moviename moviegenre averagerating) */
+			 }	  
+          }
+        }
+	 
+
+		    
+	 public static void main(String[] args) throws Exception {
+		 
+		     Configuration conf = new Configuration();        
+		    Job job = new Job(conf, "userjoinratings");
+		    job.setJarByClass(Hw2Problem2.class);
+		    job.setOutputKeyClass(Text.class);
+		    job.setOutputValueClass(Text.class);
+		    
+		    job.setInputFormatClass(TextInputFormat.class);
+		    job.setOutputFormatClass(TextOutputFormat.class);
+		       
+		    
+	       MultipleInputs.addInputPath(job, new Path(args[0]), TextInputFormat.class, MapUsers.class); //Specifying path for users.dat file
+		   MultipleInputs.addInputPath(job, new Path(args[1]), TextInputFormat.class, MapRatings.class); //Specifying path for ratings.dat file
+		   
+		   job.setReducerClass(ReduceJoin_UserAndRatings.class);
+		   
+		   /*Specifying path for intermediate output file which will be used in second job*/
+		   FileOutputFormat.setOutputPath(job, new Path(args[2])); 
+		   	    
+		   job.waitForCompletion(true);
+		    
+		   /*If joining of users.dat and ratings.dat is successful then start next job which will join movies.dat file  
+		    * with the intermediate file obtained after first job*/
+		   
+		    if(job.isComplete()){
+		    	Configuration conftwo = new Configuration(); 
+		    	Job jobtwo = new Job(conftwo, "userratingsjoinmovies");
+		    	
+		    	jobtwo.setOutputKeyClass(Text.class);
+		    	jobtwo.setOutputValueClass(Text.class);
+		    	jobtwo.setJarByClass(Hw2Problem2.class);
+		    	
+		    	jobtwo.setInputFormatClass(TextInputFormat.class);
+		        jobtwo.setOutputFormatClass(TextOutputFormat.class);
+		        
+		        //Specifying path for intermediate output file which is now used as an input to following mapper
+		        MultipleInputs.addInputPath(jobtwo, new Path(args[2]), TextInputFormat.class, MapForUserAndRatingsWithMovies.class);
+				
+		        //Specifying path for movies.dat file
+		        MultipleInputs.addInputPath(jobtwo, new Path(args[3]), TextInputFormat.class, MapMovies.class);
+		        
+		        
+		    	jobtwo.setReducerClass(ReduceJoin_UserAndRatingsWithMovies.class);
+		    	
+		    	//Specifying path for final output file        
+		    	FileOutputFormat.setOutputPath(jobtwo, new Path(args[4]));
+		        
+		        jobtwo.waitForCompletion(true);	    	
+		    }
+		 }
+     }
