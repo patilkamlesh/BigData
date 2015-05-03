@@ -1,0 +1,238 @@
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.*;
+import org.apache.hadoop.filecache.DistributedCache;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.conf.*;
+import org.apache.hadoop.io.*;
+import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+
+
+        
+public class Hw2Problem1 {
+	/*This section is used to read the userId field from ratings.dat file,
+     * so that we can calculate how many movies each user has rated    */
+	
+ public static class Map extends Mapper<LongWritable, Text, Text, IntWritable> {
+      	
+	    private final static IntWritable one = new IntWritable(1);
+        public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+    	String line = value.toString();
+        String[] scannedArray = line.split("::");
+        String userId = scannedArray [0];
+        context.write(new Text(userId),one );   	
+    }
+ } 
+ 
+       /*This section is used to emit only top 10 userIds who have rated most number of movies*/ 
+  public static class Reduce extends Reducer<Text, IntWritable, Text, IntWritable> {
+	    ArrayList<String> ratingscount = new ArrayList<String>(10);
+	    
+	    /*This priority queue is used to sort the records and output the top 10 records*/
+	    PriorityQueue<String> queue = new PriorityQueue<String>(1, new Comparator<String>(){
+		  public int compare(String string1, String string2) {
+		  Integer val1 = Integer.parseInt(string1.split(":")[1].trim());
+		  Integer val2 = Integer.parseInt(string2.split(":")[1].trim()); 
+			
+			if(val1.compareTo(val2)<1)
+			 {
+				 return 1;
+			 }
+			 else
+			 {
+				 return -1;
+			 }
+		 } });
+	 
+	 
+    public void reduce(Text key, Iterable<IntWritable> values, Context context) 
+      throws IOException, InterruptedException {
+        int sum = 0;
+        for (IntWritable val : values) {
+            sum += val.get();
+        }
+          
+        /*Every userId along with number of movies rated is added to the Priority queue so that we can find out
+         * top 10 userIds who have rated most number of movies*/
+        queue.add(key + ": " + sum);        
+    }
+    
+    /*This method is used to retrieve top 10 records from priority queue and add them to array list so that
+     * they can be written to intermediate file*/
+    protected void cleanup(Context context) throws IOException, InterruptedException 
+    {
+    
+    while  (!queue.isEmpty() ) 
+    	{
+		 String m1=(queue.peek().split(":")[1].trim());
+		 String m2=(queue.poll().split(":")[0].trim());
+		 /*We are adding top 10 records based on number of movies rated by user.
+		  * We are adding the record in the format userId~numberOfmoviesrated so that we can emit both values from the reducer */
+		 ratingscount.add(m2 + "~" + m1);
+    	}
+       
+   for(int i=0; i<10; i++ ){
+    	String bothValues = ratingscount.get(i);
+    	context.write(new Text(bothValues.split("~")[0]),new IntWritable(Integer.parseInt(bothValues.split("~")[1])));
+    	/*We are splitting userId~numberOfmoviesrated and writing output in the from (userId,NumberOfMoviesRated)*/
+    }
+    }
+ }
+     
+ 
+ 
+ 
+ /*This mapper is used to join the records using distributed cache*/
+  public static class DistributedCacheMapper extends Mapper<LongWritable, Text, Text, IntWritable> {
+	 
+	  private  HashMap<String, String> UserInfoMap = new HashMap<String, String>();   
+	 
+	 ArrayList<String> ratingsCountTwo = new ArrayList<String>(10);
+	  	 
+	 public void setup(Context context) throws IOException,	 InterruptedException {
+		Path[] files = DistributedCache.getLocalCacheFiles(context.getConfiguration());
+		
+		//for (Path p : files) {
+			 BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(new FileInputStream(new File(files[0].toString()))));
+			 
+			 String line = null;
+			 String[] scannedArray; 
+			 
+			 /*In this section, we are reading userId and count of ratings from intermediate file generated from first reducer*/
+			 while ((line = bufferedReader.readLine()) != null) {
+				 scannedArray = line.split("\t");
+				 /*Adding these values to HashMap so that later they can be compared with userId from users.dat file*/
+			     UserInfoMap.put(scannedArray[0], scannedArray[1]);
+			        }
+			// }
+		}
+	 
+	 
+	 /*This mapper is used to read the contents of users.dat file so that they can be compared with 
+	  * contents of the file in the distributed cache*/
+	  public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+		    
+		    String lineForUser = value.toString();
+	       	String []splitArray = lineForUser.split("::");
+	       	String userId = splitArray[0];
+	       	String gender = splitArray[1];
+	       	String userAge = splitArray[2];
+	       	
+	       	/*Here we check whether the HashMap "UserInfoMap" contains the UserId which
+	       	 *  is equal to UserId read from  users.dat file.*/
+		    String userCountFromFile = UserInfoMap.get(userId);
+		  
+		   		    
+		 if(userCountFromFile != null){
+			context.write(new Text(userId+" "+userAge+" "+gender),new IntWritable(Integer.parseInt(userCountFromFile)));
+			  
+			}
+		   }
+	   } 
+ 
+ 
+  
+ /*This section is used to emit UserId,age,gender,countofMoviesRated based on countofMoviesRated*/
+  public static class DistributedCacheReduce extends Reducer<Text, IntWritable, Text, IntWritable> {
+	 
+	  ArrayList<String> ratingsCountTwoR = new ArrayList<String>(10);
+	  PriorityQueue<String> queueTwoR = new PriorityQueue<String>(1, new Comparator<String>(){
+		 
+		 public int compare(String string1, String string2) {
+			 Integer val1 = Integer.parseInt(string1.split(":")[1].trim());
+			 Integer val2 = Integer.parseInt(string2.split(":")[1].trim()); 
+			
+			if(val1.compareTo(val2)<1)
+			 {
+				 return 1;
+			 }
+			 else
+			 {
+				 return -1;
+			 }
+		 } });
+	 
+	 
+	    public void reduce(Text key, Iterable<IntWritable> values, Context context) 
+	      throws IOException, InterruptedException {
+	        int sum =0;
+	        for (IntWritable val : values) {
+	            sum += val.get();
+	        }
+	        /*Every userId along with movies count is added to the Priority queue so that we can find out
+	         * top 10 userIds who have rated most number of movies*/
+	        queueTwoR.add(key + ": " + sum);
+	      }
+	    
+	    /*This method is used to retrieve top 10 records from priority queue and add them to array list so that
+	     * they can be emitted from reducer*/
+	    protected void cleanup(Context context) throws IOException, InterruptedException 
+	    {
+		  while  (!queueTwoR.isEmpty() ) 
+	    	{
+			 String m1=(queueTwoR.peek().split(":")[1].trim());
+			 String m2=(queueTwoR.poll().split(":")[0].trim());
+			 ratingsCountTwoR.add(m2 + "@" + Integer.parseInt(m1));
+			}	
+		  
+		     for(int i=0; i<10; i++ ){
+		      String bothValuesR = ratingsCountTwoR.get(i);
+			  context.write(new Text(bothValuesR.split("@")[0]), new IntWritable(Integer.parseInt(bothValuesR.split("@")[1])));
+		     }
+		  }
+	    }
+  
+
+ 
+ 
+ public static void main(String[] args) throws Exception {
+	 
+    Configuration conf = new Configuration();        
+    Job job = new Job(conf, "distributedcachepart1");
+    
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(IntWritable.class);
+    job.setJarByClass(Hw2Problem1.class);
+    job.setMapperClass(Map.class);
+    
+    job.setReducerClass(Reduce.class);
+        
+    job.setInputFormatClass(TextInputFormat.class);
+    job.setOutputFormatClass(TextOutputFormat.class);
+        
+    FileInputFormat.addInputPath(job, new Path(args[0]));
+    FileOutputFormat.setOutputPath(job, new Path(args[1]));
+        
+    job.waitForCompletion(true);
+    
+    if(job.isComplete()){
+    	Configuration conftwo = new Configuration();
+    	/*We are adding intermediate output file from first reducer into distributed cache as this file is very
+    	 * small in size - because it has only top 10 users who have rated most number of movies*/
+    	DistributedCache.addCacheFile(new URI("/user/kvp120030/HW_2/problem1_intermediate/part-r-00000"), conftwo);
+        
+    	Job jobtwo = new Job(conftwo, "distributedcachepart2");
+       
+        jobtwo.setOutputKeyClass(Text.class);
+        jobtwo.setOutputValueClass(IntWritable.class);
+        jobtwo.setJarByClass(Hw2Problem1.class);
+        
+        MultipleInputs.addInputPath(jobtwo, new Path(args[2]), TextInputFormat.class, DistributedCacheMapper.class);
+        
+        jobtwo.setReducerClass(DistributedCacheReduce.class);
+        FileOutputFormat.setOutputPath(jobtwo, new Path(args[3]));
+        jobtwo.waitForCompletion(true);   	
+    	
+    }
+ }
+        
+}
