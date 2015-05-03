@@ -1,0 +1,108 @@
+import java.io.IOException;
+
+
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.conf.*;
+import org.apache.hadoop.io.*;
+import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+
+        
+public class Problem2 {
+        
+ public static class Map extends Mapper<LongWritable, Text, Text, Text> {
+           
+    public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+    	String movieName= "";
+    	String displayMovieName="";
+    	String line = value.toString();
+        String[] scannedArray = line.split("::");
+        String movieGenre = "Movie Genres - ";
+        
+        Configuration conf = context.getConfiguration();
+        String[] movieNamesOnCommandLine = conf.get("movieName").split(",");
+        Text allGenres = new Text(movieGenre);
+        
+        for(String command : movieNamesOnCommandLine ){
+        	/*We truncate the movie name such that it does not contain symbols like (,) and white spaces*/
+          	movieName = scannedArray[1].replaceAll("\\s+","").replaceAll("\\(\\d+\\)", "");
+          	displayMovieName = scannedArray[1];
+          	
+        	/*If the movie name provided on the command line matches with the one in the movies.dat file
+        	 *then, we emit all the genres separately for that movie */	
+            if (movieName.equalsIgnoreCase(command.replaceAll("\\s+","").trim())){
+        	String myline = scannedArray[2];
+        	String[] genreArray = myline.split("\\|");
+        	
+        	for(int i=0;i<genreArray.length;i++){
+        		String mygenrestring=genreArray[i];
+        		Text newWord = new Text(mygenrestring);
+        		context.write(allGenres,newWord);
+        	}
+        }        	
+     }  
+   }       
+        
+ } 
+        
+ public static class Reduce extends Reducer<Text, Text, Text, Text> {
+
+    public void reduce(Text key, Iterable<Text> values, Context context) 
+      throws IOException, InterruptedException {
+        String genreName = "";
+        int k=1;
+        
+        for(Text val : values){
+        	       /*This section is used to display combined genres of the movies provided on the command line
+        	        *and these genres are separated by comma (,) */ 	 
+        	        if(k==1){
+        		             genreName = val.toString();
+        		             k++;
+        		            }
+        	        else{
+        		              if(genreName.contains(val.toString())){
+        			              continue;
+        		                }
+        		              else
+        		         genreName = genreName + ","+  val.toString();
+        		        }
+        	        
+        	            
+                   }
+                
+           context.write(key, new Text(genreName));  
+       }
+ }
+
+
+ 
+        
+ public static void main(String[] args) throws Exception {
+	 
+    Configuration conf = new Configuration();  
+    
+        
+    conf.set("movieName", args[2]);
+    Job job = new Job(conf, "moviegenrescount");
+    
+    
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(Text.class);
+    job.setJarByClass(Problem2.class);
+    job.setMapperClass(Map.class);
+    job.setCombinerClass(Reduce.class);
+    job.setReducerClass(Reduce.class);
+        
+    job.setInputFormatClass(TextInputFormat.class);
+    job.setOutputFormatClass(TextOutputFormat.class);
+        
+    FileInputFormat.addInputPath(job, new Path(args[0]));
+    FileOutputFormat.setOutputPath(job, new Path(args[1]));
+        
+    job.waitForCompletion(true);
+ }
+ }
+        
